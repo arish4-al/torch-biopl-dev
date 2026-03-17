@@ -2,39 +2,10 @@ from collections.abc import Iterable, Mapping
 from typing import Any, Optional, Union
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 
-from bioplnn.typing import Param1dType, Param2dType, T
-
-try:
-    from addict import Dict
-
-    class AttrDict(Dict):
-        """A non-default version of the `addict.Dict` class that raises a `KeyError`
-        when a key is not found in the dictionary.
-
-        Args:
-            *args: Any positional arguments.
-            **kwargs: Any keyword arguments.
-        """
-
-        def __missing__(self, key: Any):
-            """Override the default behavior of `addict.Dict` to raise a `KeyError`
-            when a key is not found in the dictionary.
-
-            Args:
-                key: The key that was not found.
-
-            Raises:
-                KeyError: Always raised.
-            """
-            raise KeyError(key)
-
-except ImportError as e:
-    raise ImportError(
-        "addict is not installed. Please install it with `pip install addict`"
-        "or `pip install bioplnn[dev]`."
-    ) from e
+from bioplnn.typing import ScalarOrArray2dType, ScalarOrListLike, T
 
 
 def pass_fn(*args, **kwargs):
@@ -123,7 +94,7 @@ def dict_flatten(d, delimiter=".", key=None):
 
 
 def expand_list(
-    x: Optional[Param1dType[T]], n: int, depth: int = 0
+    x: Optional[ScalarOrListLike[T]], n: int, depth: int = 0
 ) -> Union[list[T], NDArray[Any]]:
     """Expands a value to a list of length n.
 
@@ -169,7 +140,7 @@ def expand_list(
 
 
 def expand_array_2d(
-    x: Optional[Param2dType[T]], m: int, n: int, depth: int = 0
+    x: Optional[ScalarOrArray2dType[T]], m: int, n: int, depth: int = 0
 ) -> NDArray[Any]:
     """Expands a value to a 2D numpy array of shape (m, n).
 
@@ -217,7 +188,33 @@ def expand_array_2d(
 
 
 def check_possible_values(
-    param_name: str, param: Iterable, valid_values: Iterable
+    param_name: str,
+    params: Union[Iterable, NDArray[Any], torch.Tensor],
+    valid_values: Union[Iterable, NDArray[Any], torch.Tensor],
 ) -> None:
-    if not set(param) <= set(valid_values):
+    """Check if the provided parameters are all valid values.
+
+    Args:
+        param_name (str): The name of the parameter (for error message).
+        params (Iterable): The parameters to check.
+        valid_values (Iterable): The valid values to check against.
+
+    Raises:
+        ValueError: If any of the parameters are not one of the valid values.
+    """
+    if isinstance(params, torch.Tensor):
+        params = set(torch.unique(params).tolist())
+    elif isinstance(params, np.ndarray):
+        params = set(np.unique(params).tolist())
+    else:
+        params = set(params)
+
+    if isinstance(valid_values, torch.Tensor):
+        valid_values = set(torch.unique(valid_values).tolist())
+    elif isinstance(valid_values, np.ndarray):
+        valid_values = set(np.unique(valid_values).tolist())
+    else:
+        valid_values = set(valid_values)
+
+    if not params <= valid_values:
         raise ValueError(f"{param_name} must be one of {valid_values}.")

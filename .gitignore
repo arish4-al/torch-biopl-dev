@@ -2,11 +2,14 @@
 **/.empty/
 **/__pycache__/
 **/.pytest_cache/
+**/.ruff_cache/
 
 **/*.out
 **/.DS_Store
 **/*.egg-info/
+
 **/config_log.yaml
+**/test.ipynb
 
 /data/
 /wandb/
