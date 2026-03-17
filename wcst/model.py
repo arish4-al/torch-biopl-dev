@@ -33,6 +33,7 @@ area_configs_feedback_model = [
                                     'inhibitory', 'inhibitory', 'inhibitory']),
         neuron_type_nonlinearity=["relu", "tanh", "relu", "relu", "relu"],
         tau_mode='subtype',
+        state_clip=20.0,
         default_neuron_state_init_fn='rand',
         inter_neuron_type_connectivity=np.array([
             [0, 1, 1, 0, 0, 0],  # input
@@ -56,6 +57,7 @@ area_configs_feedback_model = [
                                     'inhibitory', 'inhibitory', 'inhibitory']),
         neuron_type_nonlinearity=["relu", "tanh", "relu", "relu", "relu"],
         tau_mode='subtype',
+        state_clip=20.0,
         default_neuron_state_init_fn='rand',
         inter_neuron_type_connectivity=np.array([
             [0, 1, 1, 0, 0, 0],  # input (= sensory output)

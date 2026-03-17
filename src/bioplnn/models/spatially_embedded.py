@@ -182,6 +182,10 @@ class SpatiallyEmbeddedAreaConfig:
     default_neuron_state_init_fn: Union[str, TensorInitFnType] = "zeros"
     default_feedback_state_init_fn: Union[str, TensorInitFnType] = "zeros"
     default_output_state_init_fn: Union[str, TensorInitFnType] = "zeros"
+    # Optional state clipping for numerical stability: if > 0, neuron states
+    # are clamped to [-state_clip, state_clip] after the nonlinearity and
+    # before the Euler update.
+    state_clip: float = 0.0
 
     def asdict(self) -> dict[str, Any]:
         """Converts the configuration object to a dictionary.
@@ -365,6 +369,11 @@ class SpatiallyEmbeddedArea(nn.Module):
         )
 
         self.out_nonlinearity = get_activation(config.out_nonlinearity)
+
+        # Optional state clipping for numerical stability.
+        # When > 0, neuron states are clamped to [-state_clip, state_clip] after
+        # applying the neuron nonlinearity and before the Euler update.
+        self.state_clip: float = float(getattr(config, "state_clip", 0.0))
 
         #####################################################################
         # Neuron type parameters
@@ -920,6 +929,10 @@ class SpatiallyEmbeddedArea(nn.Module):
             # Aggregate all circuit outputs to this neuron type
             state_new = torch.stack(circuit_outs[i], dim=0).sum(dim=0)
             state_new = self.neuron_type_nonlinearity[i](state_new)
+
+            # Optional clipping of neuron activity to improve numerical stability
+            if self.state_clip > 0.0:
+                state_new = torch.clamp(state_new, -self.state_clip, self.state_clip)
 
             # Euler update
             state_new = (
