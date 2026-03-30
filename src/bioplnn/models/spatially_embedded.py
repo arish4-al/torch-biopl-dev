@@ -1106,13 +1106,24 @@ class SpatiallyEmbeddedRNN(nn.Module):
                 for i in range(self.num_areas)
             ]
 
-        # Validate area configurations
+        # Validate area configurations. Area i+1 can optionally receive extra
+        # external channels in addition to area i output channels.
+        self.area_external_in_channels: list[int] = [0] * self.num_areas
         for i in range(self.num_areas - 1):
-            if area_configs[i].out_channels != area_configs[i + 1].in_channels:
+            prev_out_channels = int(area_configs[i].out_channels)
+            next_in_channels = int(area_configs[i + 1].in_channels)
+            if next_in_channels < prev_out_channels:
                 raise ValueError(
-                    f"The output channels of area {i} must match the input "
-                    f"channels of area {i + 1}."
+                    f"The input channels of area {i + 1} ({next_in_channels}) must be "
+                    f"at least the output channels of area {i} ({prev_out_channels})."
                 )
+            self.area_external_in_channels[i + 1] = (
+                next_in_channels - prev_out_channels
+            )
+        # Total channels expected in x: first-area input plus all later-area external inputs.
+        self.input_channels = int(area_configs[0].in_channels) + int(
+            sum(self.area_external_in_channels[1:])
+        )
 
         ############################################################
         # RNN parameters
@@ -1673,11 +1684,25 @@ class SpatiallyEmbeddedRNN(nn.Module):
             device=device,
         )
 
+        # External inputs for later areas are packed in x channel order:
+        # [area0_input | ext_area1 | ext_area2 | ...].
+        ext_offsets: list[int] = [0] * self.num_areas
+        running_offset = int(self.areas[0].in_channels)
+        for i in range(1, self.num_areas):
+            ext_offsets[i] = running_offset
+            running_offset += int(self.area_external_in_channels[i])
+
+        if x.shape[2] < self.input_channels:
+            raise ValueError(
+                f"Input has {x.shape[2]} channels, but model expects at least "
+                f"{self.input_channels} channels."
+            )
+
         for t in range(num_steps):
             for i, area in enumerate(self.areas):
                 # Compute area update and output
                 if i == 0:
-                    area_in = x[t]
+                    area_in = x[t][:, : int(area.in_channels), :, :]
                 else:
                     if self.area_time_delay:
                         area_in = output_states[i - 1][t - 1]
@@ -1688,6 +1713,15 @@ class SpatiallyEmbeddedRNN(nn.Module):
                         area_in,
                         self.areas[i].in_size,  # type: ignore
                     )
+                    extra_in_channels = int(self.area_external_in_channels[i])
+                    if extra_in_channels > 0:
+                        ext_start = ext_offsets[i]
+                        ext_end = ext_start + extra_in_channels
+                        area_ext = x[t][:, ext_start:ext_end, :, :]
+                        area_ext = self._match_spatial_size(
+                            area_ext, self.areas[i].in_size  # type: ignore
+                        )
+                        area_in = torch.cat([area_in, area_ext], dim=1)
 
                 output_states[i][t], neuron_states[i][t] = area(
                     input=area_in,

@@ -33,7 +33,7 @@ area_configs_feedback_model = [
                                     'inhibitory', 'inhibitory', 'inhibitory']),
         neuron_type_nonlinearity=["relu", "tanh", "relu", "relu", "relu"],
         tau_mode='subtype',
-        state_clip=20.0,
+        # state_clip=20.0,
         default_neuron_state_init_fn='rand',
         inter_neuron_type_connectivity=np.array([
             [0, 1, 1, 0, 0, 0],  # input
@@ -46,7 +46,7 @@ area_configs_feedback_model = [
         ]),  # columns: soma, dendrite, PV, SST, VIP, output
         feedback_channels=70,
         in_size=[1, 1],
-        in_channels=hp['n_input'] * 2 + 2 + 3,  # 37 base (prev stim + prev reward + prev choice)
+        in_channels=hp['n_input'],  # sensory-only channels
         out_channels=70,  # rich repr; first n_output channels read as choice
         inter_neuron_type_spatial_extents=(1, 1),
     ),
@@ -57,7 +57,7 @@ area_configs_feedback_model = [
                                     'inhibitory', 'inhibitory', 'inhibitory']),
         neuron_type_nonlinearity=["relu", "tanh", "relu", "relu", "relu"],
         tau_mode='subtype',
-        state_clip=20.0,
+        # state_clip=20.0,
         default_neuron_state_init_fn='rand',
         inter_neuron_type_connectivity=np.array([
             [0, 1, 1, 0, 0, 0],  # input (= sensory output)
@@ -68,7 +68,7 @@ area_configs_feedback_model = [
             [0, 0, 0, 1, 0, 0],  # VIP
         ]),
         in_size=[1, 1],
-        in_channels=70,  # receives sensory output
+        in_channels=70 + hp['n_input'] + 2 + 3,  # receives sensory output (+ history features now routed via this stream)
         out_channels=hp['n_output_rule'],  # 2 (rule only)
         inter_neuron_type_spatial_extents=(1, 1),
     )
@@ -91,7 +91,7 @@ model = SpatiallyEmbeddedRNN(
 def _build_spatial_wcst_model(
     first_in_channels: int, split_output_areas: bool = True
 ) -> SpatiallyEmbeddedRNN:
-    """Build SpatiallyEmbeddedRNN with given first-area input channels (37 or 39 for rule cue).
+    """Build SpatiallyEmbeddedRNN with given packed input channels (37 or 39).
 
     If split_output_areas is False, the last area's out_channels is expanded to
     n_output + n_output_rule so both readouts come from the same area.
@@ -108,10 +108,12 @@ def _build_spatial_wcst_model(
         inter_neuron_type_connectivity=c0.inter_neuron_type_connectivity,
         feedback_channels=c0.feedback_channels,
         in_size=c0.in_size,
-        in_channels=first_in_channels,
+        in_channels=c0.in_channels,
         out_channels=c0.out_channels,
         inter_neuron_type_spatial_extents=c0.inter_neuron_type_spatial_extents,
     )
+    base_total_in_channels = hp["n_input"] * 2 + 2 + 3
+    extra_rule_channels = max(0, int(first_in_channels) - int(base_total_in_channels))
     last_out_channels = (
         c1.out_channels
         if split_output_areas
@@ -126,7 +128,7 @@ def _build_spatial_wcst_model(
         default_neuron_state_init_fn=c1.default_neuron_state_init_fn,
         inter_neuron_type_connectivity=c1.inter_neuron_type_connectivity,
         in_size=c1.in_size,
-        in_channels=c1.in_channels,
+        in_channels=int(c1.in_channels) + extra_rule_channels,
         out_channels=last_out_channels,
         inter_neuron_type_spatial_extents=c1.inter_neuron_type_spatial_extents,
     )
@@ -147,10 +149,10 @@ def _pack_inputs_spatial(
     n_channels: int,
     spatial_size: tuple[int, int] = (1, 1),
 ) -> torch.Tensor:
-    """Build (T, B, C, H, W) input for SpatiallyEmbeddedRNN with trial history and optional rule cue.
+    """Build packed external input for SpatiallyEmbeddedRNN.
 
-    The flat input vector is tiled across the spatial dimensions so every position
-    receives the same signal.
+    Channel layout: [sensory input | prev_stim | prev_rew | prev_choice | optional rule cue].
+    The flat input vector is tiled across the spatial dimensions.
     """
     t, b, n_in = x_curr.shape
     h, w = spatial_size
@@ -159,10 +161,11 @@ def _pack_inputs_spatial(
         t, b, n_channels, h, w, device=x_curr.device, dtype=x_curr.dtype
     )
     x_full[:, :, :n_in, :, :] = x_curr.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
-    x_full[:, :, n_in : 2 * n_in, :, :] = I_prev_stim.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
-    x_full[:, :, 2 * n_in : 2 * n_in + 2, :, :] = I_prev_rew.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
-    x_full[:, :, 2 * n_in + 2 : n_base, :, :] = I_prev_choice.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
-    if rule_cue is not None and n_channels >= n_base + 2:
+    if n_channels >= n_base:
+        x_full[:, :, n_in : 2 * n_in, :, :] = I_prev_stim.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
+        x_full[:, :, 2 * n_in : 2 * n_in + 2, :, :] = I_prev_rew.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
+        x_full[:, :, 2 * n_in + 2 : n_base, :, :] = I_prev_choice.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
+    if rule_cue is not None and n_channels >= 2:
         rc = rule_cue.unsqueeze(0).unsqueeze(-1).unsqueeze(-1).expand(t, -1, -1, h, w)
         x_full[:, :, -rule_cue.shape[-1] :, :, :] = rc
     return x_full
@@ -352,7 +355,10 @@ def train_wcst(
     _custom_model = spatial_model is not None
     if _custom_model:
         spatial_model = spatial_model.to(device)  # type: ignore[union-attr]
-        first_in_channels = spatial_model.areas[0].in_channels
+        assert spatial_model is not None
+        first_in_channels = int(
+            getattr(spatial_model, "input_channels", spatial_model.areas[0].in_channels)
+        )
         if need_rule_channels and first_in_channels < base_in_channels + 2:
             raise ValueError(
                 f"Provided model has in_channels={first_in_channels}, but "
@@ -380,6 +386,14 @@ def train_wcst(
 
     assert spatial_model is not None, "No model provided or built"
     _spatial_size = tuple(spatial_model.areas[0].in_size)
+    _sensory_in = int(getattr(spatial_model.areas[0], "in_channels"))
+    _area_external = getattr(spatial_model, "area_external_in_channels", None)
+    _pfc_extra = int(_area_external[1]) if _area_external is not None and len(_area_external) > 1 else max(0, int(getattr(spatial_model.areas[1], "in_channels")) - int(getattr(spatial_model.areas[0], "out_channels")))
+    _total_in = int(getattr(spatial_model, "input_channels", _sensory_in + _pfc_extra))
+    print(
+        f"[SpatialRNN] Channel routing: sensory_in={_sensory_in}, "
+        f"pfc_extra={_pfc_extra}, total_input_channels={_total_in}"
+    )
     optimizer = _build_optimizer(spatial_model, hp)
     criterion = loss_fnc
 
@@ -2073,11 +2087,29 @@ def _save_wcst_spatial(
     fade_progress: float | None = None,
     total_batch: int | None = None,
 ) -> None:
-    """Save spatially embedded WCST model state and in_channels for loading."""
+    """Save spatial WCST model state and channel-routing metadata."""
+    first_area_in = int(getattr(model.areas[0], "in_channels"))
+    total_input_channels = int(
+        getattr(model, "input_channels", first_area_in)
+    )
+    area_external = getattr(model, "area_external_in_channels", None)
+    pfc_external_in = (
+        int(area_external[1])
+        if area_external is not None and len(area_external) > 1
+        else max(
+            0,
+            int(getattr(model.areas[1], "in_channels"))
+            - int(getattr(model.areas[0], "out_channels")),
+        )
+    )
     torch.save(
         {
             "state_dict": model.state_dict(),
+            # Legacy key kept for backward compatibility with existing loaders.
             "in_channels": first_in_channels,
+            "first_area_in_channels": first_area_in,
+            "pfc_external_in_channels": pfc_external_in,
+            "total_input_channels": total_input_channels,
             "split_output_areas": split_output_areas,
             "optimizer_state": optimizer.state_dict() if optimizer is not None else None,
             "fade_progress": fade_progress,
@@ -2094,7 +2126,21 @@ def load_wcst_spatial(
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(path, map_location=device, weights_only=True)
-    in_channels = checkpoint["in_channels"]
+    # New checkpoints store total_input_channels explicitly. Older checkpoints only
+    # store "in_channels", which could mean either total packed channels (newer
+    # pipeline) or first-area channels (older pipeline). Infer robustly.
+    base_sensory_in = int(hp["n_input"])
+    base_total_in = int(hp["n_input"] * 2 + 2 + 3)
+    if "total_input_channels" in checkpoint:
+        in_channels = int(checkpoint["total_input_channels"])
+    else:
+        legacy_in = int(checkpoint.get("in_channels", base_total_in))
+        # Legacy first-area format: n_input (+ optional 2 rule-cue channels).
+        if legacy_in <= base_sensory_in + 2:
+            in_channels = base_total_in + max(0, legacy_in - base_sensory_in)
+        else:
+            # Already in packed-total format.
+            in_channels = legacy_in
     split_output = checkpoint.get("split_output_areas", True)
     spatial_model = _build_spatial_wcst_model(in_channels, split_output)
     spatial_model.load_state_dict(checkpoint["state_dict"])
@@ -2364,7 +2410,14 @@ def eval_wcst_spatial(
         last_out = int(getattr(model.areas[-1], "out_channels", n_out_rule))
         split_output_areas = last_out == n_out_rule
 
-    n_channels = int(getattr(model.areas[0], "in_channels"))
+    n_channels = int(getattr(model, "input_channels", getattr(model.areas[0], "in_channels")))
+    _sensory_in = int(getattr(model.areas[0], "in_channels"))
+    _area_external = getattr(model, "area_external_in_channels", None)
+    _pfc_extra = int(_area_external[1]) if _area_external is not None and len(_area_external) > 1 else max(0, int(getattr(model.areas[1], "in_channels")) - int(getattr(model.areas[0], "out_channels")))
+    print(
+        f"[SpatialRNN][eval] Channel routing: sensory_in={_sensory_in}, "
+        f"pfc_extra={_pfc_extra}, total_input_channels={n_channels}"
+    )
     in_size = tuple(getattr(model.areas[0], "in_size"))
     spatial_size = (int(in_size[0]), int(in_size[1]))
 
